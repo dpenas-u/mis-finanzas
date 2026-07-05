@@ -35,9 +35,10 @@ transaccionales con estas columnas:
 - `label`
 - `comment` opcional
 
-Puedes usar el valor por defecto incluido en la app, pegar otra URL publica en la barra
-lateral o definir `MIS_FINANZAS_SHEET_URL` como variable de entorno. Si usas secretos de
-Streamlit, crea `.streamlit/secrets.toml` localmente; ese archivo queda excluido de Git.
+Pega la URL publica en la barra lateral o define `MIS_FINANZAS_SHEET_URL` como variable
+de entorno. Si usas secretos de Streamlit, crea `.streamlit/secrets.toml` localmente a
+partir de `.streamlit/secrets.example.toml`; el archivo real de secretos queda excluido
+de Git.
 
 ## Como funciona
 
@@ -86,3 +87,24 @@ entorno del proyecto:
 ```bash
 python -m unittest discover -s tests
 ```
+
+## Despliegue privado en Streamlit Community Cloud
+
+1. Crea un repositorio privado en GitHub y sube este proyecto.
+2. Entra en `https://share.streamlit.io` y conecta tu cuenta de GitHub.
+3. Crea una app nueva con:
+   - Repository: tu repositorio privado.
+   - Branch: la rama que quieras desplegar.
+   - Main file path: `app.py`.
+4. En `Advanced settings`, pega el secreto:
+
+```toml
+MIS_FINANZAS_SHEET_URL = "https://docs.google.com/spreadsheets/d/TU_ID/edit"
+```
+
+5. Despliega la app. Streamlit Community Cloud usara `environment.yml` para instalar las
+   dependencias.
+
+Mantener el repositorio y la app privados evita exponer el dashboard. Aun asi, el Google
+Sheet debe ser accesible para que la app pueda descargarlo; si es publico, trata la URL
+como dato sensible y no la subas al repositorio.

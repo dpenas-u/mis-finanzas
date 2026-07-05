@@ -10,10 +10,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-DEFAULT_SHEET_URL = (
-    "https://docs.google.com/spreadsheets/d/"
-    "1Cn8mXJnuFatoVghd_lA_zaTYnGqVcBFGRbGGLsMUqQY/edit?gid=2102906247#gid=2102906247"
-)
+DEFAULT_SHEET_URL = ""
 
 KNOWN_COLUMNS = ["year", "month", "day", "quantity", "label", "comment"]
 REQUIRED_COLUMNS = {"year", "month", "day", "quantity", "label"}
@@ -438,6 +435,116 @@ def label_monthly_evolution(
         .reset_index(drop=True)
     )
     return evolution
+
+
+def label_monthly_comparison(
+    df: pd.DataFrame,
+    label_column: str,
+    selected_labels: list[str],
+) -> pd.DataFrame:
+    columns = [
+        "month_start",
+        label_column,
+        "expense",
+        "income",
+        "net",
+        "movements",
+    ]
+    if df.empty or not selected_labels:
+        return pd.DataFrame(columns=columns)
+
+    filtered = df.loc[df[label_column].isin(selected_labels)].copy()
+    if filtered.empty:
+        return pd.DataFrame(columns=columns)
+
+    comparison = (
+        filtered.groupby(["month_start", label_column], as_index=False)
+        .agg(
+            expense=("expense_abs", "sum"),
+            income=("income_amount", "sum"),
+            net=("quantity", "sum"),
+            movements=("quantity", "size"),
+        )
+        .sort_values(["month_start", label_column])
+        .reset_index(drop=True)
+    )
+    return comparison
+
+
+def label_trend_summary(
+    df: pd.DataFrame,
+    label_column: str,
+    recent_months: int = 3,
+) -> pd.DataFrame:
+    columns = [
+        label_column,
+        "gasto_total",
+        "ultimo_mes",
+        "media_reciente",
+        "media_anterior",
+        "cambio_vs_anterior",
+        "movimientos",
+    ]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    expense_df = df.loc[df["expense_abs"] > 0].copy()
+    if expense_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    months = pd.Index(expense_df["month_start"].dropna().sort_values().unique())
+    if len(months) == 0:
+        return pd.DataFrame(columns=columns)
+
+    recent_count = max(1, min(recent_months, len(months)))
+    recent = months[-recent_count:]
+    previous = months[max(0, len(months) - recent_count * 2) : len(months) - recent_count]
+    last_month = months[-1]
+
+    monthly = (
+        expense_df.groupby([label_column, "month_start"], as_index=False)
+        .agg(
+            expense=("expense_abs", "sum"),
+            movements=("quantity", "size"),
+        )
+    )
+    pivot = (
+        monthly.pivot_table(
+            index=label_column,
+            columns="month_start",
+            values="expense",
+            aggfunc="sum",
+            fill_value=0.0,
+        )
+        .reindex(columns=months, fill_value=0.0)
+        .sort_index()
+    )
+
+    trends = pd.DataFrame(
+        {
+            label_column: pivot.index,
+            "gasto_total": pivot.sum(axis=1).to_numpy(),
+            "ultimo_mes": pivot[last_month].to_numpy(),
+            "media_reciente": pivot.loc[:, recent].mean(axis=1).to_numpy(),
+            "media_anterior": (
+                pivot.loc[:, previous].mean(axis=1).to_numpy()
+                if len(previous) > 0
+                else np.full(len(pivot), np.nan)
+            ),
+        }
+    )
+    movements = monthly.groupby(label_column)["movements"].sum()
+    trends["movimientos"] = trends[label_column].map(movements).fillna(0).astype(int)
+    trends["cambio_vs_anterior"] = np.where(
+        trends["media_anterior"] > 0,
+        (trends["media_reciente"] - trends["media_anterior"]) / trends["media_anterior"],
+        np.nan,
+    )
+    return (
+        trends.sort_values(["media_reciente", "gasto_total"], ascending=[False, False])
+        .reset_index(drop=True)
+        .loc[:, columns]
+    )
 
 
 def recurring_label_profile(

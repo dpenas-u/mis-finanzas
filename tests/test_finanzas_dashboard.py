@@ -7,6 +7,8 @@ import pandas as pd
 from finanzas_dashboard import (
     balance_over_time,
     build_projection_history,
+    label_monthly_comparison,
+    label_trend_summary,
     monthly_summary,
     normalize_account_sheet,
     recurring_label_profile,
@@ -96,6 +98,50 @@ class FinanzasDashboardTest(unittest.TestCase):
         self.assertIn("history", result)
         self.assertEqual(result["history"]["recurring_income"].sum(), 3000.0)
         self.assertEqual(result["history"]["variable_expense"].sum(), 750.0)
+
+    def test_label_monthly_comparison_filters_selected_labels(self) -> None:
+        df = pd.DataFrame(
+            {
+                "month_start": pd.to_datetime(
+                    ["2026-01-01", "2026-01-01", "2026-02-01"]
+                ),
+                "label_display": ["Super", "Restaurante", "Super"],
+                "quantity": [-100.0, -40.0, -120.0],
+                "income_amount": [0.0, 0.0, 0.0],
+                "expense_abs": [100.0, 40.0, 120.0],
+            }
+        )
+
+        result = label_monthly_comparison(df, "label_display", ["Super"])
+
+        self.assertEqual(result["label_display"].unique().tolist(), ["Super"])
+        self.assertEqual(result["expense"].sum(), 220.0)
+        self.assertEqual(result["movements"].sum(), 2)
+
+    def test_label_trend_summary_compares_recent_and_previous_months(self) -> None:
+        df = pd.DataFrame(
+            {
+                "month_start": pd.to_datetime(
+                    [
+                        "2026-01-01",
+                        "2026-02-01",
+                        "2026-03-01",
+                        "2026-04-01",
+                    ]
+                ),
+                "label_display": ["Super"] * 4,
+                "quantity": [-50.0, -100.0, -150.0, -200.0],
+                "expense_abs": [50.0, 100.0, 150.0, 200.0],
+            }
+        )
+
+        result = label_trend_summary(df, "label_display", recent_months=2)
+
+        row = result.iloc[0]
+        self.assertEqual(row["ultimo_mes"], 200.0)
+        self.assertEqual(row["media_reciente"], 175.0)
+        self.assertEqual(row["media_anterior"], 75.0)
+        self.assertAlmostEqual(row["cambio_vs_anterior"], 100.0 / 75.0)
 
 
 if __name__ == "__main__":

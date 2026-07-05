@@ -17,8 +17,10 @@ from finanzas_dashboard import (
     build_projection_history,
     combine_accounts,
     filter_period,
+    label_monthly_comparison,
     label_monthly_evolution,
     label_summary,
+    label_trend_summary,
     load_accounts_from_sheet,
     month_label_breakdown,
     monthly_balance_over_time,
@@ -44,6 +46,8 @@ def load_dashboard_data(sheet_ref: str):
 
 
 def format_eur(value: float) -> str:
+    if pd.isna(value):
+        return "n/d"
     formatted = f"{value:,.2f} €"
     return formatted.replace(",", "X").replace(".", ",").replace("X", ".")
 
@@ -52,6 +56,25 @@ def format_pct(value: float) -> str:
     if pd.isna(value):
         return "n/d"
     return f"{value * 100:.1f}%"
+
+
+def period_preset_dates(
+    preset: str,
+    min_date,
+    max_date,
+) -> tuple:
+    max_ts = pd.Timestamp(max_date)
+    if preset == "Últimos 3 meses":
+        start_ts = max_ts - pd.DateOffset(months=3) + pd.DateOffset(days=1)
+    elif preset == "Últimos 6 meses":
+        start_ts = max_ts - pd.DateOffset(months=6) + pd.DateOffset(days=1)
+    elif preset == "Este año":
+        start_ts = pd.Timestamp(year=max_ts.year, month=1, day=1)
+    else:
+        start_ts = pd.Timestamp(min_date)
+
+    start_date = max(pd.Timestamp(min_date), start_ts).date()
+    return start_date, pd.Timestamp(max_date).date()
 
 
 def default_sheet_ref() -> str:
@@ -64,6 +87,44 @@ def default_sheet_ref() -> str:
     except Exception:
         secret_value = None
     return secret_value or DEFAULT_SHEET_URL
+
+
+def previous_period_metrics(
+    accounts_df: pd.DataFrame,
+    start_date,
+    end_date,
+) -> dict:
+    duration_days = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days
+    prev_end = pd.Timestamp(start_date) - pd.Timedelta(days=1)
+    prev_start = prev_end - pd.Timedelta(days=duration_days)
+    prev_df = filter_period(accounts_df, prev_start, prev_end)
+    if prev_df.empty:
+        return {}
+    prev_income = float(prev_df["income_amount"].sum())
+    prev_expense = float(prev_df["expense_abs"].sum())
+    prev_net = float(prev_df["quantity"].sum())
+    return {
+        "income": prev_income,
+        "expense": prev_expense,
+        "net": prev_net,
+        "savings_rate": prev_net / prev_income if prev_income > 0 else None,
+    }
+
+
+def delta_eur(current: float, previous: float | None) -> str | None:
+    if previous is None:
+        return None
+    diff = current - previous
+    sign = "+" if diff >= 0 else ""
+    return f"{sign}{format_eur(diff)}"
+
+
+def delta_pct_points(current: float | None, previous: float | None) -> str | None:
+    if current is None or previous is None or pd.isna(current) or pd.isna(previous):
+        return None
+    diff = current - previous
+    sign = "+" if diff >= 0 else ""
+    return f"{sign}{diff * 100:.1f} pp"
 
 
 def compact_text_columns(columns: list[str]) -> dict[str, st.column_config.TextColumn]:
@@ -190,11 +251,13 @@ def plot_monthly_net(monthly_df: pd.DataFrame) -> go.Figure:
             "Neto negativo": "#dc2626",
         },
     )
+    fig.update_traces(hovertemplate="%{x|%b %Y}<br><b>%{y:,.2f} €</b><extra></extra>")
     fig.update_layout(
         title="Neto mensual",
-        xaxis_title="Mes",
+        xaxis_title="",
         yaxis_title="Euros",
         legend_title="",
+        separators=",.",
         margin=dict(l=10, r=10, t=52, b=10),
     )
     return fig
@@ -207,18 +270,21 @@ def plot_income_vs_expense(monthly_df: pd.DataFrame) -> go.Figure:
         y=monthly_df["income"],
         name="Ingresos",
         marker_color="#0f766e",
+        hovertemplate="%{x|%b %Y}<br><b>Ingresos: %{y:,.2f} €</b><extra></extra>",
     )
     fig.add_bar(
         x=monthly_df["month_start"],
         y=monthly_df["expense"],
         name="Gastos",
         marker_color="#d97706",
+        hovertemplate="%{x|%b %Y}<br><b>Gastos: %{y:,.2f} €</b><extra></extra>",
     )
     fig.update_layout(
         title="Ingresos vs gastos",
-        xaxis_title="Mes",
+        xaxis_title="",
         yaxis_title="Euros",
         barmode="group",
+        separators=",.",
         margin=dict(l=10, r=10, t=52, b=10),
     )
     return fig
@@ -232,11 +298,13 @@ def plot_daily_balance(balance_df: pd.DataFrame) -> go.Figure:
         markers=True,
         color_discrete_sequence=["#0f172a"],
     )
+    fig.update_traces(hovertemplate="%{x|%d %b %Y}<br><b>Saldo: %{y:,.2f} €</b><extra></extra>")
     fig.update_layout(
         title="Evolución del saldo acumulado",
-        xaxis_title="Fecha",
-        yaxis_title="Saldo",
+        xaxis_title="",
+        yaxis_title="Saldo (€)",
         showlegend=False,
+        separators=",.",
         margin=dict(l=10, r=10, t=52, b=10),
     )
     return fig
@@ -249,11 +317,13 @@ def plot_monthly_balance(balance_df: pd.DataFrame) -> go.Figure:
         y="balance",
         color_discrete_sequence=["#2563eb"],
     )
+    fig.update_traces(hovertemplate="%{x|%b %Y}<br><b>Patrimonio: %{y:,.2f} €</b><extra></extra>")
     fig.update_layout(
         title="Patrimonio acumulado por mes",
-        xaxis_title="Mes",
-        yaxis_title="Saldo",
+        xaxis_title="",
+        yaxis_title="Saldo (€)",
         showlegend=False,
+        separators=",.",
         margin=dict(l=10, r=10, t=52, b=10),
     )
     return fig
@@ -269,12 +339,14 @@ def plot_savings_rate(monthly_df: pd.DataFrame) -> go.Figure:
         markers=True,
         color_discrete_sequence=["#0f766e"],
     )
+    fig.update_traces(hovertemplate="%{x|%b %Y}<br><b>Ahorro: %{y:.1f}%</b><extra></extra>")
     fig.add_hline(y=0, line_width=1, line_dash="dot", line_color="#64748b")
     fig.update_layout(
         title="Tasa de ahorro mensual",
-        xaxis_title="Mes",
+        xaxis_title="",
         yaxis_title="% sobre ingresos",
         showlegend=False,
+        separators=",.",
         margin=dict(l=10, r=10, t=52, b=10),
     )
     return fig
@@ -289,12 +361,14 @@ def plot_account_monthly_net(account_monthly_df: pd.DataFrame) -> go.Figure:
         markers=True,
         color_discrete_sequence=PALETTE,
     )
+    fig.update_traces(hovertemplate="%{x|%b %Y}<br><b>Neto: %{y:,.2f} €</b><extra></extra>")
     fig.add_hline(y=0, line_width=1, line_dash="dot", line_color="#64748b")
     fig.update_layout(
         title="Neto mensual por cuenta",
-        xaxis_title="Mes",
+        xaxis_title="",
         yaxis_title="Euros",
         legend_title="Cuenta",
+        separators=",.",
         margin=dict(l=10, r=10, t=52, b=10),
     )
     return fig
@@ -309,7 +383,7 @@ def plot_expense_pie(pie_df: pd.DataFrame, label_column: str) -> go.Figure:
         color_discrete_sequence=PALETTE,
     )
     fig.update_layout(
-        title="Distribución de gastos por label",
+        title="Distribución de gastos por categoría",
         margin=dict(l=10, r=10, t=52, b=10),
     )
     return fig
@@ -324,11 +398,13 @@ def plot_label_totals(summary_df: pd.DataFrame, label_column: str) -> go.Figure:
         orientation="h",
         color_discrete_sequence=["#d97706"],
     )
+    fig.update_traces(hovertemplate="<b>%{y}</b><br>%{x:,.2f} €<extra></extra>")
     fig.update_layout(
-        title="Top labels por gasto",
-        xaxis_title="Gasto acumulado",
+        title="Dónde se va el dinero",
+        xaxis_title="Gasto acumulado (€)",
         yaxis_title="",
         showlegend=False,
+        separators=",.",
         margin=dict(l=10, r=10, t=52, b=10),
     )
     return fig
@@ -341,6 +417,7 @@ def plot_label_evolution(evolution_df: pd.DataFrame) -> go.Figure:
         y=evolution_df["expense"],
         name="Gasto",
         marker_color="#d97706",
+        hovertemplate="%{x|%b %Y}<br><b>Gasto: %{y:,.2f} €</b><extra></extra>",
     )
     fig.add_scatter(
         x=evolution_df["month_start"],
@@ -348,11 +425,41 @@ def plot_label_evolution(evolution_df: pd.DataFrame) -> go.Figure:
         mode="lines+markers",
         name="Neto",
         line=dict(color="#0f766e", width=3),
+        hovertemplate="%{x|%b %Y}<br><b>Neto: %{y:,.2f} €</b><extra></extra>",
     )
     fig.update_layout(
-        title="Evolución mensual del label",
-        xaxis_title="Mes",
+        title="Evolución mensual de la categoría",
+        xaxis_title="",
         yaxis_title="Euros",
+        separators=",.",
+        margin=dict(l=10, r=10, t=52, b=10),
+    )
+    return fig
+
+
+def plot_label_comparison(
+    comparison_df: pd.DataFrame,
+    label_column: str,
+    metric_column: str,
+    metric_label: str,
+) -> go.Figure:
+    fig = px.line(
+        comparison_df,
+        x="month_start",
+        y=metric_column,
+        color=label_column,
+        markers=True,
+        color_discrete_sequence=PALETTE,
+    )
+    fig.update_traces(hovertemplate="%{x|%b %Y}<br><b>%{y:,.2f}</b><extra></extra>")
+    if metric_column in {"net", "cambio_vs_anterior"}:
+        fig.add_hline(y=0, line_width=1, line_dash="dot", line_color="#64748b")
+    fig.update_layout(
+        title=f"Evolución mensual por categoría: {metric_label.lower()}",
+        xaxis_title="",
+        yaxis_title=metric_label,
+        legend_title="Categoría",
+        separators=",.",
         margin=dict(l=10, r=10, t=52, b=10),
     )
     return fig
@@ -400,10 +507,12 @@ def plot_projection_balance(
             name=f"Escenario: {scenario_name}",
             line=dict(color="#0f766e", width=3, dash="dash"),
         )
+    fig.update_traces(hovertemplate="%{x|%b %Y}<br><b>%{y:,.2f} €</b><extra></extra>")
     fig.update_layout(
         title="Balance histórico y proyección",
-        xaxis_title="Mes",
-        yaxis_title="Saldo",
+        xaxis_title="",
+        yaxis_title="Saldo (€)",
+        separators=",.",
         margin=dict(l=10, r=10, t=52, b=10),
     )
     return fig
@@ -443,11 +552,13 @@ def plot_projection_components(projection_df: pd.DataFrame) -> go.Figure:
         mode="lines+markers",
         line=dict(color="#2563eb", width=3, dash="dot"),
     )
+    fig.update_traces(hovertemplate="%{x|%b %Y}<br><b>%{y:,.2f} €</b><extra></extra>")
     fig.update_layout(
         title="Composición del flujo proyectado",
-        xaxis_title="Mes",
+        xaxis_title="",
         yaxis_title="Euros",
         barmode="stack",
+        separators=",.",
         margin=dict(l=10, r=10, t=52, b=10),
     )
     return fig
@@ -474,10 +585,12 @@ def plot_scenario_outcomes(scenario_results: dict[str, pd.DataFrame]) -> go.Figu
         color="avg_net",
         color_continuous_scale=["#dc2626", "#d97706", "#0f766e"],
     )
+    fig.update_traces(hovertemplate="<b>%{y}</b><br>%{x:,.2f} €<extra></extra>")
     fig.update_layout(
         title="Balance final por escenario",
-        xaxis_title="Balance estimado al final del horizonte",
+        xaxis_title="Balance estimado al final del horizonte (€)",
         yaxis_title="",
+        separators=",.",
         margin=dict(l=10, r=10, t=52, b=10),
     )
     return fig
@@ -535,15 +648,28 @@ def main() -> None:
             options=all_accounts,
             default=all_accounts,
         )
-        start_date, end_date = st.slider(
-            "Periodo",
-            min_value=min_date,
-            max_value=max_date,
-            value=(min_date, max_date),
-            format="DD/MM/YYYY",
+        period_preset = st.selectbox(
+            "Periodo rápido",
+            options=["Todo", "Últimos 3 meses", "Últimos 6 meses", "Este año", "Personalizado"],
+            index=0,
+            help="Usa Personalizado si quieres ajustar el rango manualmente.",
         )
+        preset_start, preset_end = period_preset_dates(period_preset, min_date, max_date)
+        if period_preset == "Personalizado":
+            start_date, end_date = st.slider(
+                "Periodo personalizado",
+                min_value=min_date,
+                max_value=max_date,
+                value=(min_date, max_date),
+                format="DD/MM/YYYY",
+            )
+        else:
+            start_date, end_date = preset_start, preset_end
+            st.caption(
+                f"Periodo aplicado: {start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')}"
+            )
         label_mode = st.radio(
-            "Agrupación de labels",
+            "Agrupación de categorías",
             options=list(LABEL_MODES.keys()),
             help="Normalizadas agrupa labels equivalentes ignorando mayúsculas.",
         )
@@ -564,9 +690,9 @@ def main() -> None:
 
     with st.sidebar:
         selected_labels = st.multiselect(
-            "Filtrar labels",
+            "Filtrar categorías",
             options=available_labels,
-            help="Afecta a la sección de labels, al gráfico circular y a la tabla de movimientos.",
+            help="Afecta a categorías, al gráfico circular y a la tabla de movimientos.",
         )
 
     labels_df = period_df.copy()
@@ -617,17 +743,22 @@ def main() -> None:
         else np.nan
     )
 
+    prev = previous_period_metrics(accounts_df, start_date, end_date)
+
     source_text = (
         "Google Sheets en directo"
         if metadata["source"] == "google_sheets"
         else "Copia local de respaldo"
     )
+    loaded_at = metadata.get("loaded_at")
+    loaded_at_str = loaded_at.strftime("%H:%M") if loaded_at else "?"
     st.markdown(
         f"""
         <div class="pill-row">
             <div class="pill">Fuente: {source_text}</div>
-            <div class="pill">Cuentas detectadas: {len(all_accounts)}</div>
-            <div class="pill">Periodo disponible: {min_date.strftime("%d/%m/%Y")} - {max_date.strftime("%d/%m/%Y")}</div>
+            <div class="pill">Actualizado: {loaded_at_str}</div>
+            <div class="pill">Cuentas: {len(all_accounts)}</div>
+            <div class="pill">Periodo disponible: {min_date.strftime("%d/%m/%Y")} – {max_date.strftime("%d/%m/%Y")}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -642,10 +773,34 @@ def main() -> None:
 
     metric_cols = st.columns(5)
     metric_cols[0].metric("Balance a fecha fin", format_eur(current_balance))
-    metric_cols[1].metric("Neto del periodo", format_eur(period_net))
-    metric_cols[2].metric("Ingresos del periodo", format_eur(period_income))
-    metric_cols[3].metric("Gastos del periodo", format_eur(period_expense))
-    metric_cols[4].metric("Tasa de ahorro", format_pct(savings_rate))
+    metric_cols[1].metric(
+        "Neto del periodo",
+        format_eur(period_net),
+        delta=delta_eur(period_net, prev.get("net")),
+        delta_color="normal",
+        help="Comparado con el periodo anterior de igual duración.",
+    )
+    metric_cols[2].metric(
+        "Ingresos del periodo",
+        format_eur(period_income),
+        delta=delta_eur(period_income, prev.get("income")),
+        delta_color="normal",
+        help="Comparado con el periodo anterior de igual duración.",
+    )
+    metric_cols[3].metric(
+        "Gastos del periodo",
+        format_eur(period_expense),
+        delta=delta_eur(period_expense, prev.get("expense")),
+        delta_color="inverse",
+        help="Verde si gastas menos que el periodo anterior.",
+    )
+    metric_cols[4].metric(
+        "Tasa de ahorro",
+        format_pct(savings_rate),
+        delta=delta_pct_points(savings_rate, prev.get("savings_rate")),
+        delta_color="normal",
+        help="Comparado con el periodo anterior de igual duración.",
+    )
 
     secondary_cols = st.columns(3)
     secondary_cols[0].metric("Gasto medio mensual", format_eur(avg_monthly_expense))
@@ -659,7 +814,7 @@ def main() -> None:
     )
 
     tab_summary, tab_labels, tab_projection, tab_movements = st.tabs(
-        ["Resumen", "Labels", "Proyección", "Movimientos"]
+        ["Resumen", "Categorías", "Proyección", "Movimientos"]
     )
 
     with tab_summary:
@@ -732,20 +887,21 @@ def main() -> None:
 
     with tab_labels:
         st.markdown(
-            '<p class="section-caption">Aquí se concentra la analítica por categorías: frecuencia, peso económico y evolución mensual de cada label.</p>',
+            '<p class="section-caption">Analítica por categorías: peso económico, comparación temporal y señales de cambio reciente.</p>',
             unsafe_allow_html=True,
         )
         label_summary_df = label_summary(labels_df, label_column)
         if label_summary_df.empty:
-            st.info("No hay datos para los labels seleccionados.")
+            st.info("No hay datos para las categorías seleccionadas.")
         else:
-            label_row = st.columns([1.2, 1.8])
+            trend_df = label_trend_summary(labels_df, label_column)
+            label_row = st.columns([1.1, 1.9])
             label_row[0].plotly_chart(
                 plot_label_totals(label_summary_df, label_column),
                 use_container_width=True,
             )
             selected_label = label_row[1].selectbox(
-                "Label a analizar",
+                "Categoría a analizar",
                 options=label_summary_df[label_column].tolist(),
                 index=0,
             )
@@ -754,6 +910,74 @@ def main() -> None:
                 plot_label_evolution(evolution_df),
                 use_container_width=True,
             )
+
+            st.markdown("**Comparar evolución en el tiempo**")
+            comparison_controls = st.columns([2.2, 1])
+            default_compare_labels = label_summary_df[label_column].head(5).tolist()
+            compare_labels = comparison_controls[0].multiselect(
+                "Categorías a comparar",
+                options=label_summary_df[label_column].tolist(),
+                default=default_compare_labels,
+                help="Elige varias categorías para ver cómo cambian mes a mes.",
+            )
+            metric_options = {
+                "Gasto": ("expense", "Euros"),
+                "Ingresos": ("income", "Euros"),
+                "Neto": ("net", "Euros"),
+                "Movimientos": ("movements", "Movimientos"),
+            }
+            metric_name = comparison_controls[1].selectbox(
+                "Métrica",
+                options=list(metric_options.keys()),
+                index=0,
+            )
+            metric_column, metric_axis_label = metric_options[metric_name]
+            comparison_df = label_monthly_comparison(
+                labels_df,
+                label_column,
+                compare_labels,
+            )
+            if comparison_df.empty:
+                st.info("Selecciona al menos una categoría con datos para comparar su evolución.")
+            else:
+                st.plotly_chart(
+                    plot_label_comparison(
+                        comparison_df,
+                        label_column,
+                        metric_column,
+                        metric_axis_label,
+                    ),
+                    use_container_width=True,
+                )
+
+            st.markdown("**Tendencias recientes por categoría**")
+            if trend_df.empty:
+                st.info("No hay gastos suficientes para calcular tendencias por categoría.")
+            else:
+                trend_table = trend_df.assign(
+                    gasto_total=trend_df["gasto_total"].map(format_eur),
+                    ultimo_mes=trend_df["ultimo_mes"].map(format_eur),
+                    media_reciente=trend_df["media_reciente"].map(format_eur),
+                    media_anterior=trend_df["media_anterior"].map(format_eur),
+                    cambio_vs_anterior=trend_df["cambio_vs_anterior"].map(format_pct),
+                )
+                st.dataframe(
+                    trend_table,
+                    hide_index=True,
+                    use_container_width=True,
+                    height=300,
+                    column_config={
+                        **compact_text_columns([label_column]),
+                        "gasto_total": st.column_config.TextColumn("Gasto total"),
+                        "ultimo_mes": st.column_config.TextColumn("Último mes"),
+                        "media_reciente": st.column_config.TextColumn("Media reciente"),
+                        "media_anterior": st.column_config.TextColumn("Media anterior"),
+                        "cambio_vs_anterior": st.column_config.TextColumn("Cambio"),
+                        "movimientos": st.column_config.NumberColumn("Movimientos"),
+                    },
+                )
+
+            st.markdown("**Resumen completo de categorías**")
             st.dataframe(
                 label_summary_df.assign(
                     gasto_total=label_summary_df["gasto_total"].map(format_eur),
@@ -769,9 +993,26 @@ def main() -> None:
 
     with tab_projection:
         st.markdown(
-            '<p class="section-caption">La proyección ahora separa gasto fijo recurrente, gasto variable y movimientos puntuales. Así puedes comparar un escenario base con otros más conservadores o más permisivos.</p>',
+            '<p class="section-caption">La proyección separa gasto fijo recurrente, gasto variable y movimientos puntuales. Compara el escenario base con otros más conservadores o permisivos.</p>',
             unsafe_allow_html=True,
         )
+        with st.expander("¿Cómo funciona la proyección?"):
+            st.markdown(
+                """
+                Cada categoría de gasto e ingreso se clasifica según su regularidad en el histórico seleccionado:
+
+                | Tipo | Criterio | Proyección |
+                |---|---|---|
+                | **Gasto fijo recurrente** | ≥ 75 % de los meses, poca variación | Media; los escenarios no lo tocan |
+                | **Gasto variable recurrente** | Frecuente pero importe variable | Sujeto al multiplicador del escenario |
+                | **Gasto puntual** | < 50 % de los meses | Los escenarios lo modulan más |
+                | **Ingreso recurrente** | ≥ 60 % de los meses | Tendencia lineal o media |
+                | **Ingreso variable** | Entre 25 % y 60 % de los meses | Media simple |
+
+                Los **escenarios** aplican multiplicadores distintos a los componentes variables para modelar distintos comportamientos.
+                El gasto fijo se replica siempre igual independientemente del escenario.
+                """
+            )
         if len(monthly_df) < 2:
             st.info("Hace falta al menos dos meses con datos para proyectar.")
         else:
@@ -935,21 +1176,37 @@ def main() -> None:
 
     with tab_movements:
         st.markdown(
-            '<p class="section-caption">Tabla filtrable con los movimientos del periodo seleccionado. Si aplicas filtro de labels, se refleja aquí.</p>',
+            '<p class="section-caption">Tabla de movimientos del periodo. Usa el buscador para filtrar por categoría, cuenta o comentario. Si tienes filtro de categorías activo en la barra lateral, también se aplica aquí.</p>',
             unsafe_allow_html=True,
         )
         movements_df = labels_df[
             ["date", "account", "quantity", label_column, "comment", "direction"]
         ].rename(columns={label_column: "label"})
         movements_df = movements_df.sort_values("date", ascending=False).reset_index(drop=True)
+
+        search_col, count_col, download_col = st.columns([3, 1, 1])
+        search_query = search_col.text_input(
+            "Buscar",
+            placeholder="Filtrar por categoría, cuenta o comentario…",
+            label_visibility="collapsed",
+        )
+        if search_query:
+            mask = (
+                movements_df["label"].str.contains(search_query, case=False, na=False)
+                | movements_df["comment"].str.contains(search_query, case=False, na=False)
+                | movements_df["account"].str.contains(search_query, case=False, na=False)
+            )
+            movements_df = movements_df[mask].reset_index(drop=True)
+        count_col.metric("Movimientos", len(movements_df))
+
         export_df = movements_df.copy()
         export_df["date"] = export_df["date"].dt.strftime("%Y-%m-%d")
-        st.download_button(
-            "Descargar CSV del filtro actual",
+        download_col.download_button(
+            "Descargar CSV",
             data=export_df.to_csv(index=False).encode("utf-8-sig"),
             file_name="movimientos_filtrados.csv",
             mime="text/csv",
-            use_container_width=False,
+            use_container_width=True,
         )
         st.dataframe(
             movements_df.assign(
