@@ -102,7 +102,7 @@ python -m unittest discover -s tests
 MIS_FINANZAS_SHEET_URL = "https://docs.google.com/spreadsheets/d/TU_ID/edit"
 ```
 
-5. Despliega la app. Streamlit Community Cloud usara `environment.yml` para instalar las
+5. Despliega la app. Streamlit Community Cloud usara `requirements.txt` para instalar las
    dependencias.
 
 Mantener el repositorio y la app privados evita exponer el dashboard. Aun asi, el Google
