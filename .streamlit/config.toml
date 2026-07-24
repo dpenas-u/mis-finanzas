@@ -1,9 +1,7 @@
+# Sin `base` fijo: Streamlit sigue el tema claro/oscuro del sistema, y así los
+# widgets nativos (tablas, cabecera) quedan sincronizados con el CSS de la app.
 [theme]
-base = "light"
-primaryColor = "#0f766e"
-backgroundColor = "#f8fafc"
-secondaryBackgroundColor = "#ffffff"
-textColor = "#15202b"
+primaryColor = "#4f46e5"
 font = "sans serif"
 
 [server]
